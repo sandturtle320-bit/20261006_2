@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>p5.js Google 試算表雲端連動測驗網站</title>
+    
+    <!-- 1. 載入 Google Fonts: LXGW WenKai TC (霞鶩文楷 TC) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- 2. 載入 p5.js 繪圖庫 CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+
+    <style>
+        /* CSS 全局重置，確保全螢幕無邊框與無捲軸 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #faedcd; /* 規定暖色調底色 */
+            font-family: 'LXGW WenKai TC', 'Microsoft JhengHei', sans-serif;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* 網頁上方置頂的 Google 試算表網址輸入列 (方便老師隨時切換題庫) */
+        #urlInputContainer {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.92);
+            padding: 8px 14px;
+            border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            max-width: 92%;
+            width: 600px;
+            align-items: center;
+        }
+
+        #sheetUrlInput {
+            flex: 1;
+            border: 1px solid #cca47c;
+            padding: 6px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-family: 'LXGW WenKai TC', sans-serif;
+            outline: none;
+            color: #4a3b32;
+        }
+
+        #loadBtn {
+            background-color: #dda15e;
+            color: white;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            font-family: 'LXGW WenKai TC', sans-serif;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+
+        #loadBtn:hover {
+            background-color: #bc6c25;
+        }
+    </style>
+</head>
+<body>
+
+<!-- Google 試算表 CSV 連結輸入區 (老師可貼上「發布到網路」的 CSV 網址) -->
+<div id="urlInputContainer">
+    <input type="text" id="sheetUrlInput" placeholder="請貼上 Google 試算表發布之 CSV 網址..." />
+    <button id="loadBtn" onclick="applyCustomSheetUrl()">讀取新題庫 🔄</button>
+</div>
+
+<script>
+// =================================================================
+// 1. 全域變數與預設預備題庫 (Global Variables)
+// =================================================================
+
+// 預設 Google 試算表 CSV 發布網址 (老師可在此處預設填入發布後的網址)
+let GOOGLE_SHEET_CSV_URL = "";
+
+let allQuizBank = [];            // 從 Google 試算表讀取到的全部題目庫 (例如 10 題或以上)
+let activeQuizList = [];         // 本次測驗隨機抽出的 5 題
+const QUESTIONS_PER_SESSION = 5; // 每次測驗抽出的題目數量
+
+// 遊戲狀態機: "LOADING" (讀取中), "START" (首頁), "QUESTION" (答題), "FEEDBACK" (單題檢視), "RESULT" (結算)
+let gameState = "LOADING";   
+let currentQuestionIndex = 0;    // 當前題目索引
+let score = 0;                   // 當前得分
+let selectedOption = -1;         // 玩家點選的選項 (0~3)
+let shakeAmount = 0;             // 答錯時的畫面震動強弱值
+let statusMessage = "正在連線讀取 Google 試算表題庫...";
+
+// 背景與答對特效粒子
+let backgroundBubbles = [];      // 背景暖色調漂浮氣泡
+let confettiParticles = [];      // 答對時噴發的紙花粒子
+
+// 介面按鈕區域 (用於動態點擊/觸控判斷)
+let optionRects = [];
+let nextBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+let restartBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+let startBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+
+// 預設備用題庫 (當尚未填入 Google 試算表網址或網路中斷時自動啟用)
+const fallbackQuizBank = [
+    { question: "下列哪一顆行星被稱為「紅色的星球」？", options: ["金星", "火星", "木星", "水星"], answer: 1, explanation: "火星表面覆蓋大量氧化鐵（鐵鏽），呈現橘紅色。" },
+    { question: "世界上最大的海洋是哪一個？", options: ["大西洋", "印度洋", "太平洋", "北冰洋"], answer: 2, explanation: "太平洋是世界上面積最大、最深的大洋。" },
+    { question: "植物進行光合作用主要吸收哪種氣體？", options: ["氧氣", "二氧化碳", "氮氣", "氫氣"], answer: 1, explanation: "植物利用二氧化碳和水，在陽光下製造葡萄糖並釋放氧氣。" },
+    { question: "人體中最大的器官是什麼？", options: ["肝臟", "心臟", "皮膚", "肺臟"], answer: 2, explanation: "皮膚是人體面積最大、重量最重的器官。" },
+    { question: "光在真空中傳播的速度大約是多少？", options: ["每秒 30 萬公里", "每秒 300 萬公里", "每秒 30 萬公尺", "每秒 3,000 公里"], answer: 0, explanation: "光速約為每秒 30 萬公里。" },
+    { question: "臺灣最高的山峰是什麼山？", options: ["雪山", "玉山", "陽明山", "阿里山"], answer: 1, explanation: "玉山主峰海拔 3,952 公尺，為臺灣第一高峰。" },
+    { question: "哪一種維生素有助於促進鈣質吸收與骨骼健康？", options: ["維生素 A", "維生素 B", "維生素 C", "維生素 D"], answer: 3, explanation: "維生素 D 能促進腸道吸收鈣質，幫助骨骼發育。" },
+    { question: "電腦的「CPU」通常指的是什麼？", options: ["中央處理器", "主記憶體", "顯示卡", "硬碟"], answer: 0, explanation: "CPU 是電腦的核心運算與指揮中心。" },
+    { question: "下列哪一種動物屬於哺乳類？", options: ["鯨魚", "企鵝", "鱷魚", "小丑魚"], answer: 0, explanation: "鯨魚用肺呼吸、胎生且會分泌乳汁餵養幼鯨。" },
+    { question: "地球自轉一圈大約需要多久時間？", options: ["12 小時", "24 小時", "30 天", "365 天"], answer: 1, explanation: "地球自轉一圈約為 24 小時，形成了晝夜交替。" }
+];
+
+// =================================================================
+// 2. p5.js 初始化 (Setup)
+// =================================================================
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    
+    // 設定繪圖字型為「霞鶩文楷 TC」
+    textFont('LXGW WenKai TC');
+    textAlign(CENTER, CENTER);
+
+    // 初始化背景裝飾氣泡粒子
+    initBackgroundBubbles();
+
+    // 嘗試讀取 Google 試算表 CSV
+    fetchGoogleSheetCSV(GOOGLE_SHEET_CSV_URL);
+}
+
+// 讀取 Google 試算表 CSV 資料
+function fetchGoogleSheetCSV(url) {
+    gameState = "LOADING";
+    statusMessage = "正在讀取 Google 試算表題庫...";
+
+    if (!url || url.trim() === "") {
+        console.warn("未設定 Google 試算表網址，啟用預設內建題庫。");
+        useFallbackBank("未設定 Google 試算表網址，使用示範題庫");
+        return;
+    }
+
+    fetch(url)
+        .then(response => {
+            if (!response.ok) throw new Error("網路回應異常");
+            return response.text();
+        })
+        .then(csvText => {
+            parseCSVContent(csvText);
+        })
+        .catch(err => {
+            console.error("讀取 Google 試算表失敗: ", err);
+            useFallbackBank("Google 試算表連結無效或尚未發布為 CSV");
+        });
+}
+
+// 切換至預設備用題庫
+function useFallbackBank(reasonMsg) {
+    allQuizBank = [...fallbackQuizBank];
+    startNewQuizSession();
+    gameState = "START";
+    statusMessage = reasonMsg;
+}
+
+// 套用輸入框中的 Google 試算表 CSV 網址
+function applyCustomSheetUrl() {
+    let inputUrl = document.getElementById('sheetUrlInput').value.trim();
+    if (inputUrl) {
+        GOOGLE_SHEET_CSV_URL = inputUrl;
+        fetchGoogleSheetCSV(inputUrl);
+    } else {
+        alert("請先貼上 Google 試算表發布的 CSV 網址！");
+    }
+}
+
+// 解析 Google 試算表傳回的 CSV 文字資料
+function parseCSVContent(csvText) {
+    let lines = csvText.split(/\r\n|\n/);
+    let loadedBank = [];
+
+    for (let i = 1; i < lines.length; i++) { // 跳過第一行標頭 (question, optionA...)
+        let line = lines[i].trim();
+        if (!line) continue;
+
+        // 正則表達式安全解析 CSV 欄位 (支援引號內含逗號)
+        let matches = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
+        if (!matches) {
+            matches = line.split(',');
+        }
+        
+        let cleanCols = matches.map(col => col.replace(/^"|"$/g, '').trim());
+
+        if (cleanCols.length >= 6) {
+            let qText = cleanCols[0];
+            let opA = cleanCols[1];
+            let opB = cleanCols[2];
+            let opC = cleanCols[3];
+            let opD = cleanCols[4];
+            let ans = parseInt(cleanCols[5]); // 0, 1, 2, 3
+            let exp = cleanCols[6] || "無詳細解析說明。";
+
+            if (qText && opA && opB && opC && opD && !isNaN(ans)) {
+                loadedBank.push({
+                    question: qText,
+                    options: [opA, opB, opC, opD],
+                    answer: ans,
+                    explanation: exp
+                });
+            }
+        }
+    }
+
+    if (loadedBank.length > 0) {
+        allQuizBank = loadedBank;
+        console.log(`成功連動 Google 試算表，共讀取 ${loadedBank.length} 道題目！`);
+        startNewQuizSession();
+        gameState = "START";
+    } else {
+        useFallbackBank("Google 試算表解析失敗，格式不符");
+    }
+}
+
+// 隨機從總題庫抽出 5 題開始新一輪測驗
+function startNewQuizSession() {
+    let shuffled = shuffle([...allQuizBank]); // p5.js 洗牌函數
+    let pickCount = min(QUESTIONS_PER_SESSION, shuffled.length);
+    activeQuizList = shuffled.slice(0, pickCount);
+
+    currentQuestionIndex = 0;
+    score = 0;
+    selectedOption = -1;
+}
+
+// 初始化背景氣泡粒子
+function initBackgroundBubbles() {
+    backgroundBubbles = [];
+    let count = Math.floor((width * height) / 18000);
+    for (let i = 0; i < count; i++) {
+        backgroundBubbles.push({
+            x: random(width),
+            y: random(height),
+            radius: random(15, 45),
+            speedY: random(0.3, 0.8),
+            speedX: random(-0.2, 0.2),
+            alpha: random(30, 80)
+        });
+    }
+}
+
+// 螢幕尺寸改變時自動調動畫布
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    initBackgroundBubbles();
+}
+
+// =================================================================
+// 3. 主繪圖循環 (Draw Loop)
+// =================================================================
+function draw() {
+    // 指定背景顏色 #faedcd
+    background('#faedcd');
+
+    // 繪製背景漂浮動態氣泡
+    drawAndBubbleParticles();
+
+    // 答錯時的螢幕震動偏移處理
+    if (shakeAmount > 0) {
+        translate(random(-shakeAmount, shakeAmount), random(-shakeAmount, shakeAmount));
+        shakeAmount *= 0.88;
+        if (shakeAmount < 0.3) shakeAmount = 0;
+    }
+
+    // 依據遊戲狀態顯示不同畫面
+    switch (gameState) {
+        case "LOADING":
+            drawLoadingScreen();
+            break;
+        case "START":
+            drawStartScreen();
+            break;
+        case "QUESTION":
+        case "FEEDBACK":
+            drawQuizScreen();
+            break;
+        case "RESULT":
+            drawResultScreen();
+            break;
+    }
+
+    // 更新並繪製答對產生的紙花特效
+    updateAndDrawConfetti();
+}
+
+// 繪製背景氣泡
+function drawAndBubbleParticles() {
+    noStroke();
+    for (let b of backgroundBubbles) {
+        b.y -= b.speedY;
+        b.x += b.speedX;
+
+        if (b.y < -b.radius) {
+            b.y = height + b.radius;
+            b.x = random(width);
+        }
+
+        fill(212, 163, 115, b.alpha);
+        ellipse(b.x, b.y, b.radius * 2);
+    }
+}
+
+// 繪製讀取中畫面
+function drawLoadingScreen() {
+    fill('#6c584c');
+    textSize(min(width * 0.05, 22));
+    textStyle(BOLD);
+    text(statusMessage, width / 2, height / 2);
+}
+
+// 繪製測驗首頁
+function drawStartScreen() {
+    let cardW = min(width * 0.88, 520);
+    let cardH = min(height * 0.65, 420);
+    let cardX = width / 2 - cardW / 2;
+    let cardY = height / 2 - cardH / 2 + 15;
+
+    // 白色面板陰影與背景
+    noStroke();
+    fill(0, 0, 0, 15);
+    rect(cardX + 6, cardY + 6, cardW, cardH, 20);
+    fill('#ffffff');
+    rect(cardX, cardY, cardW, cardH, 20);
+
+    // 主標題
+    fill('#d4a373');
+    textSize(min(width * 0.08, 36));
+    textStyle(BOLD);
+    text("雲端知識大挑戰 ☁️", width / 2, cardY + cardH * 0.25);
+
+    // 說明資訊
+    fill('#6c584c');
+    textSize(min(width * 0.04, 16));
+    textStyle(NORMAL);
+    text(`總題庫庫存：${allQuizBank.length} 題`, width / 2, cardY + cardH * 0.42);
+    text(`每輪隨機抽考：${activeQuizList.length} 題`, width / 2, cardY + cardH * 0.51);
+
+    // 開始測驗按鈕
+    let btnW = min(cardW * 0.65, 230);
+    let btnH = 55;
+    startBtnRect = {
+        x: width / 2 - btnW / 2,
+        y: cardY + cardH * 0.68,
+        w: btnW,
+        h: btnH
+    };
+
+    let isHover = isMouseInside(startBtnRect);
+    fill(isHover ? '#bc6c25' : '#dda15e');
+    rect(startBtnRect.x, startBtnRect.y, startBtnRect.w, startBtnRect.h, 28);
+
+    fill('#ffffff');
+    textSize(20);
+    textStyle(BOLD);
+    text("開始測驗 🚀", width / 2, startBtnRect.y + startBtnRect.h / 2);
+}
+
+// 繪製答題介面 (電腦/平板/手機直橫向全面響應適應)
+function drawQuizScreen() {
+    if (activeQuizList.length === 0) return;
+
+    let q = activeQuizList[currentQuestionIndex];
+    let isLandscapeMobile = (width > height) && (height < 520); // 判斷手機橫屏模式
+
+    // 1. 頂部進度條
+    let headerHeight = isLandscapeMobile ? 52 : 72;
+    
+    fill('#e9edc9');
+    rect(20, headerHeight - 12, width - 40, 10, 5);
+    fill('#6b705c');
+    let progressRatio = (currentQuestionIndex + (gameState === "FEEDBACK" ? 0.5 : 0)) / activeQuizList.length;
+    rect(20, headerHeight - 12, progressRatio * (width - 40), 10, 5);
+
+    // 2. 頂部資訊列
+    fill('#6c584c');
+    textSize(isLandscapeMobile ? 13 : 16);
+    textStyle(BOLD);
+    textAlign(LEFT, CENTER);
+    text(`問題 ${currentQuestionIndex + 1} / ${activeQuizList.length}`, 22, headerHeight - 28);
+    textAlign(RIGHT, CENTER);
+    text(`目前得分: ${score}`, width - 22, headerHeight - 28);
+    textAlign(CENTER, CENTER);
+
+    // 3. 題目卡片
+    let cardMargin = 16;
+    let cardX = cardMargin;
+    let cardY = headerHeight + 5;
+    let cardW = width - (cardMargin * 2);
+    let qAreaHeight = isLandscapeMobile ? 52 : 82;
+
+    fill('#ffffff');
+    rect(cardX, cardY, cardW, qAreaHeight, 15);
+    fill('#2b2d42');
+    textSize(isLandscapeMobile ? 14 : min(width * 0.042, 20));
+    textStyle(BOLD);
+    text(q.question, cardX + 15, cardY + 8, cardW - 30, qAreaHeight - 16);
+
+    // 4. 計算選項佈局 (手機橫屏 2x2 網格，其餘 1x4 直排)
+    optionRects = [];
+    let optionsY = cardY + qAreaHeight + (isLandscapeMobile ? 8 : 14);
+    let bottomReserve = (gameState === "FEEDBACK") ? (isLandscapeMobile ? 70 : 120) : 10;
+    let availableHeight = height - optionsY - bottomReserve;
+
+    if (isLandscapeMobile) {
+        let bW = (cardW - 12) / 2;
+        let bH = (availableHeight - 10) / 2;
+        for (let i = 0; i < 4; i++) {
+            let row = Math.floor(i / 2);
+            let col = i % 2;
+            optionRects.push({
+                x: cardX + col * (bW + 12),
+                y: optionsY + row * (bH + 10),
+                w: bW,
+                h: bH
+            });
+        }
+    } else {
+        let bW = cardW;
+        let bH = min((availableHeight - 36) / 4, 60);
+        for (let i = 0; i < 4; i++) {
+            optionRects.push({
+                x: cardX,
+                y: optionsY + i * (bH + 10),
+                w: bW,
+                h: bH
+            });
+        }
+    }
+
+    // 5. 繪製 4 個選項按鈕
+    let labels = ["A", "B", "C", "D"];
+    for (let i = 0; i < 4; i++) {
+        let r = optionRects[i];
+        let isHover = (gameState === "QUESTION") && isMouseInside(r);
+
+        let btnBg = '#ffffff';
+        let strokeColor = 'transparent';
+        let textColor = '#4a4e69';
+
+        if (gameState === "FEEDBACK") {
+            if (i === q.answer) {
+                btnBg = '#2a9d8f';     // 正確答案 (綠色)
+                textColor = '#ffffff';
+            } else if (i === selectedOption) {
+                btnBg = '#e76f51';     // 選錯選項 (紅色)
+                textColor = '#ffffff';
+            } else {
+                btnBg = '#f4f1de';     // 未選選項淡化
+                textColor = '#a0a0a0';
+            }
+        } else if (isHover) {
+            btnBg = '#e9edc9';
+            strokeColor = '#dda15e';
+        }
+
+        fill(btnBg);
+        if (strokeColor !== 'transparent') {
+            stroke(strokeColor);
+            strokeWeight(2);
+        } else {
+            noStroke();
+        }
+        rect(r.x, r.y, r.w, r.h, 12);
+        noStroke();
+
+        fill(textColor);
+        textSize(isLandscapeMobile ? 13 : 16);
+        textStyle(BOLD);
+        textAlign(LEFT, CENTER);
+        text(`${labels[i]}. ${q.options[i]}`, r.x + 15, r.y + r.h / 2, r.w - 25);
+        textAlign(CENTER, CENTER);
+    }
+
+    // 6. 答題反饋與「下一題」按鈕面板
+    if (gameState === "FEEDBACK") {
+        let isCorrect = (selectedOption === q.answer);
+        let fbY = height - (isLandscapeMobile ? 65 : 110);
+        let fbH = isLandscapeMobile ? 58 : 100;
+
+        fill('#ffffff');
+        rect(cardX, fbY, cardW, fbH, 15);
+
+        // 正確/錯誤提示
+        fill(isCorrect ? '#2a9d8f' : '#e76f51');
+        textSize(isLandscapeMobile ? 14 : 17);
+        textStyle(BOLD);
+        let statusMsg = isCorrect ? "🎉 回答正確！" : "❌ 回答錯誤！";
+        textAlign(LEFT, CENTER);
+        text(statusMsg, cardX + 15, fbY + (isLandscapeMobile ? 16 : 24));
+
+        // 解析說明
+        fill('#555555');
+        textSize(isLandscapeMobile ? 11 : 13);
+        textStyle(NORMAL);
+        text(`解析：${q.explanation}`, cardX + 15, fbY + (isLandscapeMobile ? 36 : 52), cardW - (isLandscapeMobile ? 130 : 150));
+
+        // 下一題 / 結算按鈕
+        let btnW = isLandscapeMobile ? 105 : 125;
+        let btnH = isLandscapeMobile ? 34 : 42;
+        nextBtnRect = {
+            x: cardX + cardW - btnW - 12,
+            y: fbY + (fbH - btnH) / 2,
+            w: btnW,
+            h: btnH
+        };
+
+        let isNextHover = isMouseInside(nextBtnRect);
+        fill(isNextHover ? '#bc6c25' : '#dda15e');
+        rect(nextBtnRect.x, nextBtnRect.y, nextBtnRect.w, nextBtnRect.h, 20);
+
+        fill('#ffffff');
+        textSize(isLandscapeMobile ? 13 : 15);
+        textStyle(BOLD);
+        textAlign(CENTER, CENTER);
+        let nextText = (currentQuestionIndex + 1 >= activeQuizList.length) ? "看結果 📊" : "下一題 ➔";
+        text(nextText, nextBtnRect.x + nextBtnRect.w / 2, nextBtnRect.y + nextBtnRect.h / 2);
+    }
+}
+
+// 繪製結算畫面
+function drawResultScreen() {
+    let cardW = min(width * 0.88, 500);
+    let cardH = min(height * 0.72, 440);
+    let cardX = width / 2 - cardW / 2;
+    let cardY = height / 2 - cardH / 2 + 15;
+
+    noStroke();
+    fill(0, 0, 0, 15);
+    rect(cardX + 6, cardY + 6, cardW, cardH, 20);
+    fill('#ffffff');
+    rect(cardX, cardY, cardW, cardH, 20);
+
+    let totalQuestions = activeQuizList.length;
+    let percentage = Math.round((score / totalQuestions) * 100);
+    let titleMsg = "";
+    let emoji = "";
+
+    if (percentage === 100) {
+        titleMsg = "滿分通關！太厲害了！";
+        emoji = "🏆";
+    } else if (percentage >= 60) {
+        titleMsg = "表現優異！繼續保持！";
+        emoji = "🌟";
+    } else {
+        titleMsg = "再接再厲！再試一次吧！";
+        emoji = "📚";
+    }
+
+    fill('#d4a373');
+    textSize(min(width * 0.07, 30));
+    textStyle(BOLD);
+    text(`${emoji} 測驗完成 ${emoji}`, width / 2, cardY + cardH * 0.18);
+
+    fill('#6c584c');
+    textSize(min(width * 0.045, 17));
+    text(titleMsg, width / 2, cardY + cardH * 0.32);
+
+    // 得分面板
+    fill('#faedcd');
+    rect(width / 2 - 100, cardY + cardH * 0.42, 200, 75, 16);
+
+    fill('#e76f51');
+    textSize(34);
+    textStyle(BOLD);
+    text(`${score} / ${totalQuestions}`, width / 2, cardY + cardH * 0.48);
+
+    fill('#6c584c');
+    textSize(14);
+    textStyle(NORMAL);
+    text(`正確率：${percentage}%`, width / 2, cardY + cardH * 0.55);
+
+    // 重新測驗按鈕
+    let btnW = min(cardW * 0.65, 220);
+    let btnH = 50;
+    restartBtnRect = {
+        x: width / 2 - btnW / 2,
+        y: cardY + cardH * 0.75,
+        w: btnW,
+        h: btnH
+    };
+
+    let isHover = isMouseInside(restartBtnRect);
+    fill(isHover ? '#bc6c25' : '#dda15e');
+    rect(restartBtnRect.x, restartBtnRect.y, restartBtnRect.w, restartBtnRect.h, 25);
+
+    fill('#ffffff');
+    textSize(18);
+    textStyle(BOLD);
+    text("再抽 5 題重新測驗 🔄", width / 2, restartBtnRect.y + restartBtnRect.h / 2);
+}
+
+// 產生答對噴發紙花特效
+function spawnConfetti(x, y) {
+    let colors = ['#e76f51', '#f4a261', '#e9c46a', '#2a9d8f', '#264653', '#e7c6ff'];
+    for (let i = 0; i < 45; i++) {
+        confettiParticles.push({
+            x: x,
+            y: y,
+            vx: random(-8, 8),
+            vy: random(-12, -3),
+            size: random(7, 12),
+            color: random(colors),
+            alpha: 255,
+            rotation: random(TWO_PI),
+            vRot: random(-0.2, 0.2)
+        });
+    }
+}
+
+// 更新並繪製紙花粒子
+function updateAndDrawConfetti() {
+    for (let i = confettiParticles.length - 1; i >= 0; i--) {
+        let p = confettiParticles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.4;
+        p.alpha -= 3.5;
+        p.rotation += p.vRot;
+
+        push();
+        translate(p.x, p.y);
+        rotate(p.rotation);
+        fill(color(p.color));
+        noStroke();
+        rect(-p.size / 2, -p.size / 2, p.size, p.size, 2);
+        pop();
+
+        if (p.alpha <= 0 || p.y > height + 20) {
+            confettiParticles.splice(i, 1);
+        }
+    }
+}
+
+// 檢查座標是否落在矩形區域內
+function isMouseInside(rectObj) {
+    return mouseX >= rectObj.x && mouseX <= rectObj.x + rectObj.w &&
+           mouseY >= rectObj.y && mouseY <= rectObj.y + rectObj.h;
+}
+
+// 行動裝置觸控處理
+function touchStarted() {
+    handleInput(mouseX, mouseY);
+    return false;
+}
+
+// 電腦滑鼠點擊處理
+function mousePressed() {
+    if (!('ontouchstart' in window)) {
+        handleInput(mouseX, mouseY);
+    }
+}
+
+// 統一輸入事件判斷
+function handleInput(px, py) {
+    if (gameState === "START") {
+        if (isMouseInside(startBtnRect)) {
+            gameState = "QUESTION";
+        }
+    } else if (gameState === "QUESTION") {
+        for (let i = 0; i < optionRects.length; i++) {
+            if (isMouseInside(optionRects[i])) {
+                selectedOption = i;
+                gameState = "FEEDBACK";
+
+                let q = activeQuizList[currentQuestionIndex];
+                if (i === q.answer) {
+                    score++;
+                    spawnConfetti(px, py); // 觸發答對紙花
+                } else {
+                    shakeAmount = 14;      // 觸發答錯震動
+                }
+                break;
+            }
+        }
+    } else if (gameState === "FEEDBACK") {
+        if (isMouseInside(nextBtnRect)) {
+            currentQuestionIndex++;
+            if (currentQuestionIndex >= activeQuizList.length) {
+                gameState = "RESULT";
+            } else {
+                gameState = "QUESTION";
+            }
+        }
+    } else if (gameState === "RESULT") {
+        if (isMouseInside(restartBtnRect)) {
+            startNewQuizSession(); // 洗牌再隨機抽 5 題
+            gameState = "QUESTION";
+        }
+    }
+}
+</script>
+</body>
+</html>
